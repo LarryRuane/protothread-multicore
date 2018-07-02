@@ -32,12 +32,14 @@ typedef struct protothread_s {
     /* posix pthreads */
     unsigned int npthread_max ;     /* max number of pthreads we will create */
     unsigned int npthread ;         /* total number of posix pthreads */
-    unsigned int npthread_running ; /* number of pthreads running protothreads */
+    unsigned int npthread_running ; /* # of pthreads running protothreads */
+    unsigned int run_count ;        /* inc when new thread at head of ready */
+    pthread_t monitor_tid ;         /* posix pthread id */
     pthread_t *tid ;                /* posix pthread ids (array npthread_max) */
     pthread_cond_t cond ;
 
     pt_thread_t *ready ;            /* ready to run list (points to newest) */
-    pt_thread_t *wait[PT_NWAIT] ;   /* waiting for an event (points to newest) */
+    pt_thread_t *wait[PT_NWAIT] ;   /* waiting for event (points to newest) */
     pthread_mutex_t mutex ;
 
     bool quiescing ;

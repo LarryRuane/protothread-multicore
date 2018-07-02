@@ -79,7 +79,7 @@ blocking_thr(env_t const env)
 {
     create_context_t * const c = env ;
     pt_resume(c) ;
-    usleep(600*1000) ;
+    usleep(1*1000*1000) ; // one second
 
     return PT_DONE ;
 }
@@ -95,8 +95,6 @@ test_blocking(void)
     for (i = 0; i < N; i++) {
         c[i].i = i ;
         pt_create(pt, &c[i].pt_thread, blocking_thr, &c[i]) ;
-        /* if a pthread is created, give it a chance to run the protothread */
-        usleep(10*1000) ;
     }
     protothread_quiesce(pt) ;
     /* a normal application would never care about pt->npthread */
@@ -145,7 +143,7 @@ test_yield(void)
 /* make sure that broadcast wakes up all the threads it should,
  * none of the threads it shouldn't
  */
-#define N 10000
+#define N (10*1000)
 
 typedef struct broadcast_context_s {
     pt_thread_t pt_thread ;
@@ -209,7 +207,7 @@ test_broadcast(void)
         }
         pt_broadcast(pt, chan) ;
         protothread_quiesce(pt) ;
-        /* make sure every tread that should have run did run */
+        /* make sure every thread that should have run did run */
         for (j = 0; j < N; j++) {
             assert(!gc.c[j].run) ;
         }
@@ -434,7 +432,7 @@ recursive_thr(env_t const env)
 static void
 test_recursive_once(void)
 {
-    protothread_t const pt = protothread_create_maxpt(16) ;
+    protothread_t const pt = protothread_create_maxpt(0) ;
     recursive_call_global_context_t * gc = malloc(sizeof(*gc)) ;
     recursive_call_context_t * top_c = malloc(sizeof(*top_c)) ;
     int i ;

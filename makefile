@@ -11,7 +11,7 @@ W = \
 	-Winline \
 	-Wall \
 
-CFLAGS = -O0 -g -m64 -pthread $(W)
+CFLAGS = -O2 -g -m64 -pthread $(W)
 
 all: protothread_test
 

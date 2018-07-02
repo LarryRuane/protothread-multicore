@@ -6,78 +6,11 @@
 #include <assert.h>
 #include <string.h>
 #include <stdint.h>
+#include <unistd.h>
 
 #include "protothread.h"
 
 typedef struct protothread_s *state_t ;
-
-state_t
-protothread_create_maxpt(unsigned int maxpt)
-{
-    state_t const s = malloc(sizeof(*s)) ;
-    protothread_init_maxpt(s, maxpt) ;
-    return s ;
-}
-
-state_t
-protothread_create(void)
-{
-    return protothread_create_maxpt(1) ;
-}
-
-void
-protothread_free(state_t const s)
-{
-    protothread_deinit(s) ;
-    free(s) ;
-}
-
-void
-protothread_init_maxpt(state_t const s, int maxpt)
-{
-    memset(s, 0, sizeof(*s)) ;
-    pthread_mutex_init(&s->mutex, NULL) ;
-    s->tid = calloc(maxpt, sizeof(pthread_t)) ;
-    s->npthread_max = maxpt ;
-    s->npthread_max = 0 ;
-}
-
-void
-protothread_init(state_t const s)
-{
-    protothread_init_maxpt(s, 0) ;
-}
-
-void
-protothread_deinit(state_t const s)
-{
-    protothread_quiesce(s) ;
-    pthread_mutex_lock(&s->mutex) ;
-    s->closing = true ;
-    /* awaken all idle pthreads so they see closing and exit */
-    pthread_cond_broadcast(&s->cond) ;
-    pthread_mutex_unlock(&s->mutex) ;
-    {
-        unsigned int i ;
-        for (i = 0; i < s->npthread; i++) {
-            pthread_join(s->tid[i], NULL) ;
-        }
-    }
-    free(s->tid) ;
-    pt_assert(!s->nthread) ;
-    pt_assert(!s->npthread_running) ;
-
-    if (PT_DEBUG) {
-        int i ;
-        for (i = 0; i < PT_NWAIT; i++) {
-            pt_assert(s->wait[i] == NULL) ;
-        }
-        pt_assert(s->ready == NULL) ;
-        pt_assert(s->nrunning == 0) ;
-        pt_assert(s->nthread == 0) ;
-    }
-    pthread_mutex_destroy(&s->mutex) ;
-}
 
 /* link thread as the newest in the given (ready or wait) list */
 static inline void
@@ -116,30 +49,6 @@ pt_unlink_oldest(pt_thread_t ** const head)
     return pt_unlink(head, *head) ;
 }
 
-/* finds thread <n> in list <head> and unlinks it.  Returns true if
- * it was found.
- */
-static inline bool
-pt_find_and_unlink(pt_thread_t ** const head, pt_thread_t * const n)
-{
-    pt_thread_t * prev = *head ;
-
-    while (*head) {
-        pt_thread_t * const t = prev->next ;
-        if (n == t) {
-            pt_unlink(head, prev) ;
-            return true ;
-        }
-        /* Advance to next thread */
-        prev = t ;
-        /* looped back to start? finished */
-        if (prev == *head) {
-            break ;
-        }
-    }
-    return false ;
-}
-
 static bool
 protothread_run(state_t const s)
 {
@@ -153,6 +62,7 @@ protothread_run(state_t const s)
         run = pt_unlink_oldest(&s->ready) ;
         s->nrunning++ ;
         pt_assert(s->nrunning > 0) ;
+        s->run_count++ ;    /* this can wrap-around */
         s->nresume++ ; /* debugging/testing */
         pthread_mutex_unlock(&s->mutex) ;
 
@@ -222,20 +132,11 @@ static void
 pt_add_ready(state_t const s, pt_thread_t * const t)
 {
     pt_assert(pt_mutex_is_locked(&s->mutex)) ;
+    if (s->ready == NULL) {
+        /* new thread going onto the front of the run queue */
+        s->run_count++ ;    /* this can wrap-around */
+    }
     pt_link(&s->ready, t) ;
-
-    if (s->npthread_running < s->npthread) {
-        /* there are available (idle) pthreads, no need to create another */
-        pthread_cond_signal(&s->cond) ;
-        return ;
-    }
-    if (s->npthread >= s->npthread_max) {
-        /* we are at the limit, don't create more pthreads */
-        pt_assert(s->npthread == s->npthread_max) ;
-        return ;
-    }
-    /* may want to consider creating this pthread without holding mutex */
-    pthread_create(&s->tid[s->npthread++], NULL, pt_pthread, s) ;
 }
 
 /* This is called by pt_create(), not by user code directly */
@@ -260,7 +161,7 @@ pt_create_thread(
 
     /* add the new thread to the ready list */
     pthread_mutex_lock(&s->mutex) ;
-    s->nthread ++ ;
+    s->nthread++ ;
     assert(s->nthread) ;
     pt_add_ready(s, t) ;
     pthread_mutex_unlock(&s->mutex) ;
@@ -339,4 +240,102 @@ pt_enqueue_wait(pt_thread_t * const t, void * const channel)
     t->channel = channel ;
     pt_link(wq, t) ;
     pthread_mutex_unlock(&s->mutex) ;
+}
+
+state_t
+protothread_create_maxpt(unsigned int maxpt)
+{
+    state_t const s = malloc(sizeof(*s)) ;
+    protothread_init_maxpt(s, maxpt) ;
+    return s ;
+}
+
+state_t
+protothread_create(void)
+{
+    return protothread_create_maxpt(1) ;
+}
+
+void
+protothread_free(state_t const s)
+{
+    protothread_deinit(s) ;
+    free(s) ;
+}
+
+static void *
+pt_monitor(env_t env)
+{
+    state_t const s = env ;
+    unsigned int run_count = 0 ;
+    while (true) {
+        usleep(10*1000) ;   /* 10ms */
+        if (s->closing) {
+            break ;
+        }
+        pthread_mutex_lock(&s->mutex) ;
+        if (s->ready && run_count == s->run_count) {
+            /* someone has been waiting a long time */
+            if (s->npthread_running >= s->npthread &&
+                    s->npthread < s->npthread_max) {
+                pthread_create(&s->tid[s->npthread++], NULL, pt_pthread, s) ;
+            }
+            pthread_cond_signal(&s->cond) ;
+        }
+        run_count = s->run_count ;
+        pthread_mutex_unlock(&s->mutex) ;
+    }
+    return NULL ;
+}
+
+void
+protothread_init_maxpt(state_t const s, int maxpt)
+{
+    memset(s, 0, sizeof(*s)) ;
+    pthread_mutex_init(&s->mutex, NULL) ;
+    s->tid = calloc(maxpt, sizeof(pthread_t)) ;
+    s->npthread_max = maxpt ;
+    if (s->npthread_max > 0) {
+        pthread_create(&s->monitor_tid, NULL, pt_monitor, s) ;
+    }
+}
+
+void
+protothread_init(state_t const s)
+{
+    protothread_init_maxpt(s, 0) ;
+}
+
+void
+protothread_deinit(state_t const s)
+{
+    protothread_quiesce(s) ;
+    pthread_mutex_lock(&s->mutex) ;
+    s->closing = true ;
+    /* awaken all idle pthreads so they see closing and exit */
+    pthread_cond_broadcast(&s->cond) ;
+    pthread_mutex_unlock(&s->mutex) ;
+    {
+        unsigned int i ;
+        for (i = 0; i < s->npthread; i++) {
+            pthread_join(s->tid[i], NULL) ;
+        }
+    }
+    if (s->npthread_max > 0) {
+        pthread_join(s->monitor_tid, NULL);
+    }
+    free(s->tid) ;
+    pt_assert(!s->nthread) ;
+    pt_assert(!s->npthread_running) ;
+
+    if (PT_DEBUG) {
+        int i ;
+        for (i = 0; i < PT_NWAIT; i++) {
+            pt_assert(s->wait[i] == NULL) ;
+        }
+        pt_assert(s->ready == NULL) ;
+        pt_assert(s->nrunning == 0) ;
+        pt_assert(s->nthread == 0) ;
+    }
+    pthread_mutex_destroy(&s->mutex) ;
 }
