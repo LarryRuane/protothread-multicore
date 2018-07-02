@@ -13,7 +13,6 @@ This project includes:
   * about 800 lines of test code
   * gdb (debugger) macros to print the stack traces of a given protothread or all protothreads.
 
-
 ## Threads without stacks ##
 
 The key concept of any protothreads implementation is that when a function wants to wait for an event to occur (that is, suspend itself and let other threads run), it saves its current location within the function (conceptually its line number or program counter), and returns back to the scheduler or idle loop, releasing use of the stack. The scheduler runs a different thread, handles interrupts or waits for an external event to occur. When the event occurs, the scheduler calls the function in the usual way, and the first thing the function does is `goto` the previously saved location. This location might be within levels of nested loops and `if` statements.
@@ -24,7 +23,11 @@ You can think of protothreads as a generalization of event-driven programming. A
 
 ## Support for multiple cores ##
 
-Unlike other protothread implementations, this library allows multiple cores (processors) to run protothreads concurrently, thus taking advantage of those hardware resources. It uses the well-known technique of _pthread pools_. When the system is initialized (`protothread_create_maxpt(int)`), you specify a maximum number of pthreads that will be created to run protothreads. (Other pthreads can exist that are independent of the protothread system.) The number of protothreads can, and typically does, far exceed the number of pthreads. When a protothread becomes ready to run, the protothread scheduler will assign it to an idle thread to run if there is one; if not, and if the number of pthreads is below the maximum number, the scheduler will create a new pthread to run the protothread. If the number of pthreads is already at the maximum, the protothread will wait on a first-come-first-served queue until a pthread becomes available. For now, at least, the system never reduces the number of pthreads. If the maximum number of created pthreads is set to zero, the protothread system is single-threaded (only the initial thread runs protothread), so there is the possibility of deterministic execution (more on this later).
+Unlike other protothread implementations, this library allows multiple cores (processors) to run protothreads concurrently, thus taking advantage of those hardware resources. It uses the well-known technique of _pthread pools_. When the system is initialized (`protothread_create_maxpt(int)`), you specify a maximum number of pthreads that will be created to run protothreads. (Other pthreads can exist that are independent of the protothread system.) The number of protothreads can, and typically does, far exceed the number of pthreads. The protothreads are _multiplexed_ onto the pthreads.
+
+When a protothread becomes ready to run, the protothread scheduler will assign it to an idle pthread to run if one is available; if not, and if the number of pthreads is below the maximum number, the scheduler will create a new pthread to run the protothread. If the number of pthreads is already at the maximum, the protothread will wait on a first-come-first-served queue until a pthread becomes available. For now, at least, the system never reduces the number of pthreads. If the maximum number of created pthreads is set to zero, the protothread system is single-threaded (only the initial thread runs protothreads), so there is the possibility of deterministic execution (more on this later).
+
+Another reason to use this multicore version of protothread (even if there is a single core) is if protothreads sometimes block (in the kernel). In single-core protothread implementations, if a protothread blocks to read or write a disk file or a network socket, for example, the entire protothread system is blocked -- none of the protothreads can run. With this multicore implementation, a blocking protothread ties up a pthread, but otherwise does no harm. Other protothreads can run, either on existing pthreads or newly-created pthreads.
 
 ## Example - Producer / Consumer ##
 
@@ -150,7 +153,7 @@ Now for the details. The two most interesting calls in this example are `pt_resu
                pt_label_18:
                  pthread_mutex_lock(&app_mutex);
              } while (0);
-             /* pt_wait end *****/
+             /* pt_wait() end *****/
          }
          *c->mailbox = c->i;
          pt_signal(pt_get_pt(c), c->mailbox);
@@ -194,11 +197,15 @@ Of course, the entire environment must be carefully controlled so that no nondet
 
 Using POSIX threads makes it impossible to write a deterministic test, because the thread scheduler is out of the test program's control, and it makes random decisions (that vary from run to run).
 
+In order for deterministic execution to be possible, the protothread system must be created with `max_pthread` set to 0. This means that the pthread that calls `pt_quiesce()` will run all protothreads (rather than waiting for other pthreads to finish running protothreads). This pthread is often the only (main) pthread. Your code will, of course, run more slowly; also, inter-thread mutex locking will not be exercised (there can't be any contention among pthreads, since there is only one pthread).
+
 ## Memory overhead and performance ##
 
 The best known implementation of protothreads (by Adam Dunkels) uses just two bytes per protothread. This implementation is not quite so parsimonious (mainly because this implementation includes a scheduler: threads are on either the wait or run list); our environment is not as memory-constrained. Each protothread function context has a `pt_func_t` structure, which contains 2 pointers. Each overall protothread requires a `pt_thread_t` structure, which is 5 pointers. This is still extremely small compared to a POSIX thread.
 
 The time to create and destroy a no-op thread on my desktop is 12.2 nanoseconds. The time to do that using POSIX pthreads is 7.85 microseconds, which is a ratio of 643. To compare context switch times, I timed the producer-consumer example, and each protothread switch took 22.2 nanoseconds. The context switch time for the same test coded in pthreads is 3.0 microseconds, for a ratio of 135.
+
+If your application creates a very large number of prothreads (even millions), the system scales well, except you probably should change the definition of `PT_NWAIT` in `protothread.h`. This symbol determines the number of hash table buckets that implement the wait queue (of which there is one in the overall protothread system); the default value is `1 << 12` (4096). This requires memory equal to the size of a pointer times this value (on 64-bit systems, 32k bytes). For good performance, it should be the same order of magnitude as the number of protothreads in the system (or greater).
 
 ## Conclusion ##
 
@@ -250,8 +257,8 @@ These are macros (designed to look and act like function calls) whose first argu
 
 ### Scheduling ###
 
-`bool_t protothread_quiesce(protothread_t)`
-> Wait until all protothreads become idle (not running or ready to run). If `max_pthread` was set to zero, calling this function will run the protothreads directly.
+`void protothread_quiesce(protothread_t)`
+> Wait until all protothreads become idle (not running or ready to run). The application should use some mechanism outside of the protothread system to ensure that no protothreads become ready-to-run (either due to new protothread creation or protothreads transitioning from waiting to ready-to-run). If `max_pthread` was set to zero, calling this function will run the protothreads directly, returning only when there is nothing further to run (at the moment).
 
 Please see `protothread_test.c` for working examples of using the library.
 
