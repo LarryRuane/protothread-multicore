@@ -109,6 +109,7 @@ typedef struct yield_context_s {
     pt_func_t pt_func ;
     pt_thread_t pt_thread ;
     int i ;
+    unsigned int nresume ;
 } yield_context_t ;
 
 static pt_t
@@ -118,9 +119,9 @@ yield_thr(env_t const env)
     pt_resume(c) ;
 
     for (c->i = 0; c->i < 10; c->i++) {
-        unsigned int nresume = pt_get_pt(c)->nresume ;
+        c->nresume = pt_get_pt(c)->nresume ;
         pt_yield(c) ;
-        assert(pt_get_pt(c)->nresume > nresume) ;
+        assert(pt_get_pt(c)->nresume > c->nresume) ;
     }
     return PT_DONE ;
 }
