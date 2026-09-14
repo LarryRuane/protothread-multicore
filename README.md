@@ -1,3 +1,48 @@
+## Archived ##
+
+This repository is an unfinished experiment and is not maintained. It was never
+released, and as far as I know it was never used by anyone. The maintained
+implementation is [protothread](https://github.com/LarryRuane/protothread),
+which has moved on considerably since this fork was taken. Nothing here has
+been carried forward, and nothing here should be.
+
+**What it was for.** Running protothreads on several cores at once, by
+multiplexing them onto a pool of pthreads, and giving `pt_wait()` a mutex
+argument so that releasing that mutex and enqueuing on the wait channel happen
+atomically -- exactly `pthread_cond_wait()` semantics.
+
+**The idea underneath it is a good one, and it has been proven elsewhere
+since.** Because protothreads are stackless, and all of a protothread's state
+lives in its context structure, *any* thread can resume *any* protothread:
+there is no stack to migrate and no affinity to respect. That is what makes
+M:N scheduling nearly free here, and it is the same arrangement Go's scheduler
+and Rust's multi-threaded async executors arrived at independently.
+
+**Why it stopped.** Two of the three reasons to use protothreads do not
+survive the change. Execution is no longer deterministic, so the
+reproducible-by-seed testing described below stops applying. And once the
+application must hold a mutex around its own shared state, it carries the full
+cognitive load of threaded programming *plus* the constraints of protothreads
+-- no local variables across a blocking call, no blocking system calls. What
+is left is cheap context switches and small memory, much less useful
+than the single-core version.
+
+There is also a ceiling built into the design. One global mutex protects the
+ready list and every wait list, so every wait, signal, yield, create and resume
+serializes on it. A single-core protothread context switch costs a few
+nanoseconds; a contended global mutex costs considerably more. The scheduler
+centralizes precisely what the rest of the design sets out to parallelize.
+Getting past that needs per-core run queues and work stealing, which is a
+different project than this one.
+
+The code below still builds and its tests still pass, but it has known defects:
+a data race on shutdown, an assertion that cannot check what it claims to, and
+a scheduler that notices new work only on a 10 ms timer, so an idle pool can
+sit on a runnable protothread for that long. Read this as notes on an idea,
+not as something to run.
+
+Larry Ruane, September, 2026
+
 ## Introduction ##
 
 [Protothreads](http://en.wikipedia.org/wiki/Protothreads) is a programming model invented by Adam Dunkels that combines the advantages of _event-driven_ (sometimes also called _state machine_) programming and _threaded_ programming. The main advantage of the event-driven model is efficiency, both speed and memory usage. The main advantage of the threaded model is [algorithm clarity](http://dunkels.com/adam/dunkels06protothreads.pdf). Protothreads gives you both. A protothread is an extremely lightweight thread. As with event-driven programming, there is a single stack; but like threaded programming, a function can (at least conceptually) block. This protothreads implementation:
@@ -9,7 +54,6 @@ The version described here is a fork of the [Protothread](https://github.com/Lar
 
 This project includes:
   * full source code (about 400 lines including comments)
-  * two synchronization facilities built on top of the base protothreads (semaphores and locks)
   * about 800 lines of test code
   * gdb (debugger) macros to print the stack traces of a given protothread or all protothreads.
 
